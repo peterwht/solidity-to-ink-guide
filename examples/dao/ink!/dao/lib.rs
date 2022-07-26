@@ -33,7 +33,6 @@ mod dao {
     };
     use scale::Output;
 
-
     pub const SECOND: u64 = 1;
     pub const MINUTE: u64 = 60 * SECOND;
     pub const HOUR: u64 = 60 * MINUTE;
@@ -158,7 +157,7 @@ mod dao {
 
     impl ink_storage::traits::PackedAllocate for Proposal {
         fn allocate_packed(&mut self, at: &Key){
-            PackedAllocate::allocate_packed(&mut *self, at)
+            // PackedAllocate::allocate_packed(&mut *self, at);
         }
     }
 
@@ -305,6 +304,11 @@ mod dao {
         }
 
         #[ink(message)]
+        pub fn return_proposal(&self, prop_id: u64) -> Proposal {
+            self.proposals[prop_id as usize].clone()
+        }
+
+        #[ink(message)]
         pub fn vote(&mut self, proposal_id: u64, supports_proposal: bool) {
             let caller = self.env().caller();
 
@@ -389,7 +393,8 @@ mod dao {
         }
 
         #[ink(message)]
-        pub fn execute_proposal(&mut self, proposal_id: u64, function_selector: [u8; 4], transaction_data: Vec<u8>, gas_limit: u64) -> Result<()>{
+        //TODO: turn function_selector back to [u8; 4] -- edited because UI does not work with it
+        pub fn execute_proposal(&mut self, proposal_id: u64, function_selector: Vec<u8>, transaction_data: Vec<u8>, gas_limit: u64) -> Result<()>{
             let now = self.env().block_timestamp();
 
             let p = &self.proposals[proposal_id as usize];
@@ -412,7 +417,7 @@ mod dao {
 
             if !self.allowed_recipients.get(p.recipient).unwrap_or(false) {
                 // transfer the payment into the payee's account
-                //TOOD: add to guide `p.creator.send(amount) ->
+                //TODO: add to guide `p.creator.send(amount) ->
                 if self.env().transfer(p.creator, p.proposal_deposit).is_err() {
                     panic!("unable to return deposit")
                 }
@@ -458,6 +463,7 @@ mod dao {
                     p_mut.proposal_passed = true;
                 }
 
+                //TODO: remove this once the UI is fixed
                 let mut tmp_selector: [u8; 4] = [0;4];
                 tmp_selector[0] = function_selector[0];
                 tmp_selector[1] = function_selector[1];

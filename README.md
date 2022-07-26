@@ -1,5 +1,9 @@
 # Solidity to ink! Guide
 
+## What is ink!
+
+ink! is the smart contract language used in Substrate. It is built from Rust -- meaning that the great features of Rust are included in ink!. These features are ideal for a smart contract language. Furthermore, ink! is compiled to WebAssembly, allowing for high-performant, consistent, and very well-researched and developed code. ink! smart contracts use Rust's no_std. So, some common Rust implementations are not directly supported. However, ink! does have crates that reimplement common Rust code to work in the Substrate runtime.
+
 ## Setup
 
 Follow the [first-smart-contract](https://docs.substrate.io/tutorials/smart-contracts/first-smart-contract/) tutorial.
@@ -30,8 +34,8 @@ An example Solidity class looks like:
 
 ```c++
 contract MyContract {
-    bool _theBool // TODO, check if _name is only used for private
-    event UpdatedBool(bool indexed theBool)
+    bool _theBool;
+    event UpdatedBool(bool indexed theBool);
 
     constructor(bool _someBool) {
         require(_someBool == true, "someBool must start as true");
@@ -43,10 +47,10 @@ contract MyContract {
         if _theBool == _newBool{
                _boolChanged = false;
         }else{
-            _boolChanged = true
+            _boolChanged = true;
         }
 
-        _theBool = _newBool
+        _theBool = _newBool;
         //emit event
         UpdatedBool(newBool);
     }
@@ -113,7 +117,7 @@ A few key differences are:
 
 ## Best Practices
 
-- If the Solidity contract uses a `string`, it is recommended to use a `Vec<u8>` to avoid the overhead of a `String`. See [here](https://substrate.stackexchange.com/questions/1174/why-is-it-a-bad-idea-to-use-string-in-an-ink-smart-contract) for more details on why.
+- If the Solidity contract uses a `string`, it is recommended to use a `Vec<u8>` to avoid the overhead of a `String`. See [here](https://substrate.stackexchange.com/questions/1174/why-is-it-a-bad-idea-to-use-string-in-an-ink-smart-contract) for more details on why. The smart contract should only contain the information that strictly needs to be placed on the blockchain and go through consensus. The UI should be used for displaying strings.
 
 ## Syntax Equivalencies
 
@@ -122,6 +126,9 @@ A few key differences are:
 ```c++
 // solidity
 function fnName() public {}
+//or
+//by default, functions are public
+function fnName() {}
 ```
 
 ```rust
@@ -206,7 +213,7 @@ assert!(some_value < 10, "some_value is not less than 10");
 ```
 
 - `virtual` or `override`  
-  virtual and override are modifiers in Solidity that allow a function to override another. ink! (Rust) does not have this ability as overring may create ambiguity.
+  virtual and override are modifiers in Solidity that allow a function to override another. ink! (Rust) does not have this ability as overriding may create ambiguity.
 
 - `timestamp`
 
@@ -275,7 +282,7 @@ self.env().account_id()
 ```
 
 - `bytes`  
-  Solidity has a type `bytes`. `bytes` is (essentially) equivalent to an array of uint8. So, `bytes` in Solidity => `Vec<u8>` in ink!
+  Solidity has a type `bytes`. `bytes` is (essentially) equivalent to an array of uint8. So, `bytes` in Solidity => `Vec<u8>` in ink!. See [here](https://ethereum.stackexchange.com/questions/91119/difference-between-byte-and-uint8-datatypes-in-solidity) for more details. If desired, a `bytes` struct can be created in ink! to replicate the `bytes` type in Solidity.
 - `uint256` TODO
 - `payable`
 
@@ -299,6 +306,32 @@ msg.value
 ```rust
 // ink!
 self.env().transferred_value()
+```
+
+- `contract balance`
+
+```c++
+// solidity
+this.balance
+```
+
+```rust
+// ink!
+self.env().balance()
+```
+
+- `transfer from contract`
+
+```c++
+// solidity
+recipient.send(amount)
+```
+
+```rust
+//ink!
+if self.env().transfer(recipient, amount).is_err() {
+    panic!("error transferring")
+}
 ```
 
 - `events & indexed`
@@ -331,18 +364,6 @@ self.env().emit_event(MyCoolEvent {
     indexed_value: some_value,
     not_indexed_value: some_other_value
 });
-```
-
-- `contract balance`
-
-```c++
-// solidity
-this.balance
-```
-
-```rust
-// ink!
-self.env().balance()
 ```
 
 - `nested mappings + custom / advanced structures`  
@@ -432,7 +453,7 @@ mod dao {
 }
 ```
 
-This almost works as expected. However, there is still one issue. `Vec<T>` requires that `T` implements `PackedAllocate`. So, `Vec<Proposal>` will throw errors. To fix this, `Proposal` needs to implement `PackedAllocate`. See [here](https://paritytech.github.io/ink/ink_storage/traits/trait.PackedAllocate.html) for details + examples. See the following for this example:
+This almost works as expected. However, there is still one issue. `SpreadAllocate` (used with `Mapping`) requires that `Vec<Proposal>` implements `PackedAllocate`. To fix this, `Proposal` needs to implement `PackedAllocate`. See [here](https://paritytech.github.io/ink/ink_storage/traits/trait.PackedAllocate.html) for details + examples. See the following for this example:
 
 ```rust
     use ink_primitives::Key;
@@ -457,6 +478,8 @@ This almost works as expected. However, there is still one issue. `Vec<T>` requi
 ```rust
 // ink!
 ```
+
+In ink!
 
 - `submit generic transaction / dynamic cross-contract calling`
 
@@ -527,6 +550,7 @@ Note: the `function_selector` bytes can be found in the generated `target/ink/me
   - implementing traits / interfaces will not work
   - There are alternatives that do add this functionality such as OpenBrush
 - Nested structs and data structures can be difficult to use
+- Cross-contract calling prevents events from being emitted. See [here](https://github.com/paritytech/ink/issues/1000) for details
 
 ## Troubleshooting Errors
 
