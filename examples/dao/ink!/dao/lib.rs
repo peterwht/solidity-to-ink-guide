@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+// #![feature(min_specialization)]
 
 use ink_lang as ink;
 
@@ -7,13 +8,11 @@ pub use self::dao::{
     Proposal,
     WEEK,
 };
-
 #[ink::contract]
 mod dao {
     use ink_storage::{
         traits::{
             PackedLayout,
-            PackedAllocate,
             SpreadAllocate,
             SpreadLayout,
         },
@@ -32,6 +31,8 @@ mod dao {
         Selector, 
     };
     use scale::Output;
+
+    use erc20::Erc20Ref;
 
     pub const SECOND: u64 = 1;
     pub const MINUTE: u64 = 60 * SECOND;
@@ -98,8 +99,8 @@ mod dao {
         // the accumulated sum of all current proposal deposits
         sum_of_proposal_deposits: u128, // u256;
 
-        //TODO: Add token contract
-        //https://ink.substrate.io/basics/cross-contract-calling/
+        //Voting power is represented by amount of Erc20 tokens
+        token: Erc20Ref,
     }
 
     // A proposal with `newCurator == false` represents a transaction
@@ -216,14 +217,29 @@ mod dao {
         /// Constructor that initializes the `bool` value to the given `init_value`.
         #[ink(constructor)]
         //TODO: u128 needs to be u256
-        pub fn new(curator: AccountId, proposal_deposit: u128, token_contract_hash: Hash) -> Self {
+        pub fn new(curator: AccountId, proposal_deposit: u128, token_contract_id: AccountId) -> Self {
             ink_lang::utils::initialize_contract(|contract| {
-                Self::new_init(contract, curator, proposal_deposit, token_contract_hash)
+                Self::new_init(contract, curator, proposal_deposit, token_contract_id)
             })
         }
 
-        fn new_init(&mut self, curator: AccountId, proposal_deposit: u128, token_contract_hash: Hash) {
-            //TODO: self.token_hash = token_contract_hash
+        fn new_init(&mut self, curator: AccountId, proposal_deposit: u128, token_contract_id: AccountId) {
+            // let total_balance = Self::env().balance();
+            // let salt = 1u32.to_le_bytes();
+            // let token = Erc20Ref::new(token_init_val)
+            //     .endowment(total_balance / 4)
+            //     .code_hash(token_contract_hash)
+            //     .salt_bytes(salt)
+            //     .instantiate()
+            //     .unwrap_or_else(|error| {
+            //         panic!(
+            //             "failed at instantiating the Erc20 contract: {:?}",
+            //             error
+            //         )
+            //     });
+
+            self.token = ink_env::call::FromAccountId::from_account_id(token_contract_id);
+
             self.curator = curator;
             self.proposal_deposit = proposal_deposit;
             self.last_time_min_quorum_met = self.env().block_timestamp();
@@ -255,7 +271,6 @@ mod dao {
                 self.last_time_min_quorum_met = self.env().block_timestamp();
             }
 
-            //TODO: is using `as` okay? An element message quoted Dr. Wood saying not to use `as`
             let proposal_id: u64 = self.proposals.len() as u64;
 
             let encodable = (recipient, amount, transaction_data); // Implements `scale::Encode`
@@ -284,12 +299,12 @@ mod dao {
             
             self.proposals.push(p);
 
-            self.env().emit_event(ProposalAdded {
-                proposal_id,
-                recipient,
-                amount,
-                description
-            });
+            // self.env().emit_event(ProposalAdded {
+            //     proposal_id,
+            //     recipient,
+            //     amount,
+            //     description
+            // });
 
             Ok(proposal_id)
         }
@@ -304,8 +319,13 @@ mod dao {
         }
 
         #[ink(message)]
-        pub fn return_proposal(&self, prop_id: u64) -> Proposal {
+        pub fn get_proposal(&self, prop_id: u64) -> Proposal {
             self.proposals[prop_id as usize].clone()
+        }
+
+        #[ink(message)]
+        pub fn get_total_supply(&self) -> Balance {
+            self.token.total_supply()
         }
 
         #[ink(message)]
@@ -317,10 +337,10 @@ mod dao {
             let mut p = &mut self.proposals[proposal_id as usize];
 
             if supports_proposal {
-                p.yea += 1; // TODO: need cross-contract with token
+                p.yea += self.token.balance_of(caller);
                 p.voted_yes.insert(caller, true);
             }else {
-                p.nay += 1; // TODO: token contract
+                p.nay += self.token.balance_of(caller);
                 p.voted_no.insert(caller, true);
             }
 
@@ -335,11 +355,11 @@ mod dao {
             let voted_proposals = &mut self.voting_register.get(caller).unwrap_or(Vec::new());
             voted_proposals.push(proposal_id);
 
-            self.env().emit_event(Voted {
-                proposal_id,
-                position: supports_proposal,
-                voter: caller,
-            });
+            // self.env().emit_event(Voted {
+            //     proposal_id,
+            //     position: supports_proposal,
+            //     voter: caller,
+            // });
         }
 
         #[ink(message)]
@@ -355,12 +375,12 @@ mod dao {
             }
 
             if *p.voted_yes.get(&caller).unwrap_or(&false) {
-                p.yea -= 1; // TODO: need cross-contract with token
+                p.yea -= self.token.balance_of(caller);
                 p.voted_yes.insert(caller, false);
             }
             
             if *p.voted_no.get(&caller).unwrap_or(&false) {
-                p.nay -= 1; // TODO: token contract
+                p.nay -= self.token.balance_of(caller);
                 p.voted_no.insert(caller, false);
             }
         }
@@ -417,7 +437,6 @@ mod dao {
 
             if !self.allowed_recipients.get(p.recipient).unwrap_or(false) {
                 // transfer the payment into the payee's account
-                //TODO: add to guide `p.creator.send(amount) ->
                 if self.env().transfer(p.creator, p.proposal_deposit).is_err() {
                     panic!("unable to return deposit")
                 }
@@ -447,10 +466,10 @@ mod dao {
                 }
 
                 self.last_time_min_quorum_met = now;
-                //TODO: token contract
-                // if quorum > token.total_supply() / 7{
-                //     minQuorumDivisor = 7;
-                // }
+
+                if quorum > self.token.total_supply() / 7{
+                    self.min_quorum_divisor = 7;
+                }
             }
 
             if quorum >= self.min_quorum(p.amount) && p.yea > p.nay && proposal_check {
@@ -482,11 +501,11 @@ mod dao {
 
             self.close_proposal(proposal_id);
 
-            self.env().emit_event(ProposalTallied {
-                proposal_id,
-                result: true,
-                quorum,
-            });
+            // self.env().emit_event(ProposalTallied {
+            //     proposal_id,
+            //     result: true,
+            //     quorum,
+            // });
 
             Ok(())
         }
@@ -520,7 +539,7 @@ mod dao {
             let contract_addr = self.env().account_id();
 
             if caller == contract_addr || proposal_deposit > (self.actual_balance() / MAX_DEPOSIT_DIVISOR){
-                //TODO: maybe panic instead? 
+                //TODO: solidity uses `throw`
                 return;
             }
 
@@ -537,10 +556,10 @@ mod dao {
 
             self.allowed_recipients.insert(recipient, &allowed);
 
-            self.env().emit_event(AllowedRecipientChanged {
-                recipient,
-                allowed,
-            });
+            // self.env().emit_event(AllowedRecipientChanged {
+            //     recipient,
+            //     allowed,
+            // });
 
             return Ok(())
         }
@@ -582,11 +601,9 @@ mod dao {
 
         //solidity has uint (256) for value
         fn min_quorum(&self, value: u128) -> u128 {
-            //token.totalSupply() / minQuorumDivisor +
-            //(_value * token.totalSupply()) / (3 * (actualBalance()));
-            //TODO: need token contract
-            let tmp_token_supply = 1;
-            return tmp_token_supply / self.min_quorum_divisor + (value * tmp_token_supply) / 3 * self.actual_balance();
+            let total_supply = self.token.total_supply();
+            return total_supply / self.min_quorum_divisor +
+                (value * total_supply) / (3 * (self.actual_balance()));
         }
 
         #[ink(message)]
@@ -819,3 +836,4 @@ mod dao {
 
     }
 }
+

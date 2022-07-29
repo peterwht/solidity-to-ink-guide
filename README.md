@@ -1,8 +1,42 @@
 # Solidity to ink! Guide
 
+- [Solidity to ink! Guide](#solidity-to-ink-guide)
+  - [What is ink!](#what-is-ink)
+  - [Setup](#setup)
+  - [Converting Solidity Contract to ink!](#converting-solidity-contract-to-ink)
+    - [1. Generate New ink! Contract](#1-generate-new-ink-contract)
+    - [2. Build ink! Contract](#2-build-ink-contract)
+    - [3. Convert Solidity class to Rust struct](#3-convert-solidity-class-to-rust-struct)
+  - [Best Practices + Tips](#best-practices--tips)
+  - [Syntax Equivalencies](#syntax-equivalencies)
+    - [`public function`](#public-function)
+    - [`mapping declaration`](#mapping-declaration)
+    - [`mapping usage`](#mapping-usage)
+    - [`struct`](#struct)
+    - [`assertions / requires`](#assertions--requires)
+    - [`timestamp`](#timestamp)
+    - [`contract caller`](#contract-caller)
+    - [`contract's address`](#contracts-address)
+    - [`bytes`](#bytes)
+    - [`uint256` TODO](#uint256-todo)
+    - [`payable`](#payable)
+    - [`received deposit / payment`](#received-deposit--payment)
+    - [`contract balance`](#contract-balance)
+    - [`transfer tokens from contract`](#transfer-tokens-from-contract)
+    - [`events & indexed`](#events--indexed)
+    - [`nested mappings + custom / advanced structures`](#nested-mappings--custom--advanced-structures)
+    - [`cross-contract calling`](#cross-contract-calling)
+    - [`submit generic transaction / dynamic cross-contract calling`](#submit-generic-transaction--dynamic-cross-contract-calling)
+  - [Limitations of ink! v3](#limitations-of-ink-v3)
+  - [Troubleshooting Errors](#troubleshooting-errors)
+  - [unit testing (off-chain)](#unit-testing-off-chain)
+  - [OpenBrush](#openbrush)
+  - [Misc Notes (needs to be organized)](#misc-notes-needs-to-be-organized)
+  - [misc steps](#misc-steps)
+
 ## What is ink!
 
-ink! is the smart contract language used in Substrate. It is built from Rust -- meaning that the great features of Rust are included in ink!. These features are ideal for a smart contract language. Furthermore, ink! is compiled to WebAssembly, allowing for high-performant, consistent, and very well-researched and developed code. ink! smart contracts use Rust's no_std. So, some common Rust implementations are not directly supported. However, ink! does have crates that reimplement common Rust code to work in the Substrate runtime.
+ink! is the smart contract language used in Substrate. It is built from Rust -- meaning that the great features of Rust are included in ink!. These features are ideal for a smart contract language. Furthermore, ink! is compiled to WebAssembly, allowing for high-performant, consistent, and very well-researched contracts. ink! smart contracts use Rust's no_std. So, some common Rust implementations are not directly supported. However, ink! does have crates that reimplement common Rust code to work in the Substrate runtime.
 
 ## Setup
 
@@ -115,13 +149,14 @@ A few key differences are:
 - Solidity uses camelCase. ink! uses snake_case.
 - In Solidity, the variable type comes before the variable name (e.g. bool myVar). While ink! specifies var type after the var name (e.g. my_var: bool)
 
-## Best Practices
+## Best Practices + Tips
 
 - If the Solidity contract uses a `string`, it is recommended to use a `Vec<u8>` to avoid the overhead of a `String`. See [here](https://substrate.stackexchange.com/questions/1174/why-is-it-a-bad-idea-to-use-string-in-an-ink-smart-contract) for more details on why. The smart contract should only contain the information that strictly needs to be placed on the blockchain and go through consensus. The UI should be used for displaying strings.
+- Double check all `.unwrap()` performed. Solidity does not have as strict checking as ink! does. For example, a mapping field can be accessed as simple as `myMapping[someKey]`. ink!, however, requires `self.my_mapping.get(some_key).unwrap()`. `.unwrap_or(some_val)` is very useful to handle `None` cases.
 
 ## Syntax Equivalencies
 
-- `public function`
+### `public function`
 
 ```c++
 // solidity
@@ -137,7 +172,7 @@ function fnName() {}
 pub fn fn_name(&self) {}
 ```
 
-- `mapping declaration`
+### `mapping declaration`
 
 ```c++
 // solidity
@@ -160,7 +195,7 @@ pub struct ContractName {
 
 when using a map in ink!, `ink_lang::utils::initialize_contract` must be used in the constructor. See [here](https://ink.substrate.io/datastructures/mapping) for more details.
 
-- `mapping usage`
+### `mapping usage`
 
 ```c++
 // solidity
@@ -182,7 +217,7 @@ self.a_map.insert(&a_key, &a_value);
 self.a_map.get(a_key).unwrap()
 ```
 
-- `struct`
+### `struct`
 
 ```c++
 // solidity
@@ -200,7 +235,7 @@ struct MyPerson {
 }
 ```
 
-- `assertions / requires`
+### `assertions / requires`
 
 ```c++
 // solidity
@@ -212,10 +247,7 @@ require(someValue < 10, "someValue is not less than 10");
 assert!(some_value < 10, "some_value is not less than 10");
 ```
 
-- `virtual` or `override`  
-  virtual and override are modifiers in Solidity that allow a function to override another. ink! (Rust) does not have this ability as overriding may create ambiguity.
-
-- `timestamp`
+### `timestamp`
 
 ```c++
 // solidity
@@ -229,7 +261,7 @@ now
 self.env().block_timestamp()
 ```
 
-- `contract caller`
+### `contract caller`
 
 ```c++
 // solidity
@@ -238,38 +270,10 @@ address caller = msg.sender;
 
 ```rust
 // ink!
-let caller = self.env().caller();
+let caller: AccountId = self.env().caller();
 ```
 
-- `events`
-
-```c++
-// solidity
-
-// example declaration
-event SomeEvent(uint128 value);
-
-// usage
-emit SomeEvent(someValue);
-```
-
-```rust
-// ink!
-
-// declaration
-#[ink(event)]
-pub struct SomeEvent{
-    #[ink(topic)]
-    value: u128,
-}
-
-// usage
-self.env().emit_event(SomeEvent {
-    value: some_value,
-});
-```
-
-- `contract's address`
+### `contract's address`
 
 ```c++
 // solidity
@@ -281,10 +285,13 @@ address(this)
 self.env().account_id()
 ```
 
-- `bytes`  
-  Solidity has a type `bytes`. `bytes` is (essentially) equivalent to an array of uint8. So, `bytes` in Solidity => `Vec<u8>` in ink!. See [here](https://ethereum.stackexchange.com/questions/91119/difference-between-byte-and-uint8-datatypes-in-solidity) for more details. If desired, a `bytes` struct can be created in ink! to replicate the `bytes` type in Solidity.
-- `uint256` TODO
-- `payable`
+### `bytes`
+
+Solidity has a type `bytes`. `bytes` is (essentially) equivalent to an array of uint8. So, `bytes` in Solidity => `Vec<u8>` in ink!. See [here](https://ethereum.stackexchange.com/questions/91119/difference-between-byte-and-uint8-datatypes-in-solidity) for more details. If desired, a `bytes` struct can be created in ink! to replicate the `bytes` type in Solidity.
+
+### `uint256` TODO
+
+### `payable`
 
 ```c++
 // solidity
@@ -296,7 +303,7 @@ function myFunction() payable returns (uint64) {}
 pub fn my_function() -> (u64) {}
 ```
 
-- `received deposit`
+### `received deposit / payment`
 
 ```C++
 // solidity
@@ -308,7 +315,7 @@ msg.value
 self.env().transferred_value()
 ```
 
-- `contract balance`
+### `contract balance`
 
 ```c++
 // solidity
@@ -320,7 +327,7 @@ this.balance
 self.env().balance()
 ```
 
-- `transfer from contract`
+### `transfer tokens from contract`
 
 ```c++
 // solidity
@@ -334,7 +341,7 @@ if self.env().transfer(recipient, amount).is_err() {
 }
 ```
 
-- `events & indexed`
+### `events & indexed`
 
 ```c++
 // solidity
@@ -366,8 +373,9 @@ self.env().emit_event(MyCoolEvent {
 });
 ```
 
-- `nested mappings + custom / advanced structures`  
-  In Solidity, it is easy to do nested mappings. It is not as straightforward in ink!.
+### `nested mappings + custom / advanced structures`
+
+In Solidity, it is easy to do nested mappings. It is not as straightforward in ink!.
 
 imagine the following scenario
 
@@ -411,9 +419,9 @@ mod dao {
 }
 ```
 
-[This answer](https://substrate.stackexchange.com/questions/1659/how-to-have-a-mapping-in-a-custom-structure-inside-an-ink-contract) explains in detail why nested mappings are not allowed)
+However, this will cause an error due to the nested mapping. [This answer](https://substrate.stackexchange.com/questions/1659/how-to-have-a-mapping-in-a-custom-structure-inside-an-ink-contract) explains in detail why nested mappings are not allowed
 
-So, as of now, to get around this issue an alternate data structure will need to be used. A data-structure that can be interchanged with the `Mapping` syntax and with minimal additional implementations is the `BTreeMap`. `BTreeMap` is less efficient than `Mapping`. This will be used in the nested struct. Additional `derive`s will need to be added to be compatible with the #[ink(storage)] struct (see below).
+So, as of now, to get around this issue an alternate data structure will need to be used. A data-structure that can be interchanged with the `Mapping` syntax and with minimal additional implementations is the `BTreeMap`. `BTreeMap` is less efficient than `Mapping`, but is an easy workaround until the nested mappings are allowed. This will be used in the nested struct. Additional `derive`s will need to be added to be compatible with the #[ink(storage)] struct (see below).
 
 ```rust
 #[ink::contract]
@@ -469,19 +477,98 @@ This almost works as expected. However, there is still one issue. `SpreadAllocat
     }
 ```
 
-- `cross-contract calling`
+### `cross-contract calling`
 
-```c++
-// solidity
-```
+In ink!, to do [cross-contract calling](https://ink.substrate.io/basics/cross-contract-calling), the contract will need to be added to the project. Ensure the contract is properly exporting its Structs. See the `erc20` contract example:
 
 ```rust
-// ink!
+#![cfg_attr(not(feature = "std"), no_std)]
+
+use ink_lang as ink;
+
+//make the structs visible
+pub use self::erc20::{
+    Erc20,
+    //this is necessary
+    Erc20Ref,
+};
+
+#[ink::contract]
+pub mod erc20 {}
 ```
 
-In ink!
+In the new cross-called contract's Cargo.toml, add (or edit) the following:
 
-- `submit generic transaction / dynamic cross-contract calling`
+```
+[lib]
+name = "erc20"
+path = "lib.rs"
+crate-type = [
+	# Used for normal contract Wasm blobs.
+	"cdylib",
+    # Used for ABI generation. Necessary for importing as a dependency
+    "rlib",
+]
+
+[features]
+ink-as-dependency = []
+```
+
+`ink-as-dependency` "tells the ink! code generator to always or never compile the smart contract as if it was used as a dependency of another ink! smart contract" ([source](https://ink.substrate.io/basics/cross-contract-calling)).
+
+Then, In the main contract's Cargo.toml, import the contract that will be cross-called.
+
+```rust
+erc20 = { path = "erc20", default-features = false, features = ["ink-as-dependency"] }
+```
+
+And make sure to add it to the `std` field of the the .toml file.
+
+```rust
+[features]
+default = ["std"]
+std = [
+    # ...
+
+    "erc20/std",
+]
+```
+
+Now, import the cross-contract to the main contract:
+
+```rust
+// example
+use erc20::Erc20Ref;
+```
+
+There are two methods to setup the other contract.
+
+1. Instantiate the cross-contract in the main contract's constructor.  
+   See [here](https://ink.substrate.io/basics/cross-contract-calling/) for a tutorial, and [here](https://github.com/paritytech/ink/tree/master/examples/delegator) for an example.
+2. Or, add the `AccountId` of an already deployed contract.
+   Here is an example constructor to set this up:
+
+   ```rust
+   use my_other_contract::MyOtherContractRef;
+   // ...
+   fn new(contract_id: AccountId) -> Self {
+        //for already deployed contract
+        let contract_ref: MyOtherContractRef = ink_env::call::FromAccountId::from_account_id(contract_id);
+        Self {contract_ref}
+   }
+   ```
+
+Now, to perform the cross-contract call:
+
+```rust
+{
+    self.contract_ref.some_external_function(a_param);
+}
+```
+
+Note: as of now (Jul. 26th, 2022. ink! v3.3.0), when doing cross-contract calling, emitting events will not work and compile errors will occur. See [issue #1000](https://github.com/paritytech/ink/issues/1000). Furthermore, the compiler will throw an error saying that (for example) Erc20Ref does not implement `SpreadAllocate`. This [issue #1149](https://github.com/paritytech/ink/issues/1149) explains more and has a workaround. These issues will be fixed in [issue #1134](https://github.com/paritytech/ink/issues/1134).
+
+### `submit generic transaction / dynamic cross-contract calling`
 
 ```c++
 // solidity
@@ -544,7 +631,7 @@ fn invoke_transaction(
 
 Note: the `function_selector` bytes can be found in the generated `target/ink/metadata.json`
 
-## Limitations of ink!
+## Limitations of ink! v3
 
 - Multi-file projects are not supported with pure ink!
   - implementing traits / interfaces will not work
@@ -576,9 +663,7 @@ Add the following to contract the Cargo.toml:
 overflow-checks = false
 ```
 
-## ink! Tips + Usage
-
-### unit testing (off-chain)
+## unit testing (off-chain)
 
 - Unit tests are an excellent way to ensure your code works before attempting on-chain testing.
 - To run ink! tests, do _not_ use `cargo +nightly contract test`. Use `cargo +nightly test`. See [here](https://substrate.stackexchange.com/questions/3197/how-to-understand-which-test-failed-in-ink) for more info why.
@@ -628,6 +713,12 @@ AccountId::from([0x01; 32]);
 Hash::from([0x01; 32])
 ```
 
+## OpenBrush
+
+[OpenBrush](https://openbrush.io/) is a library that adds additional features to ink!. OpenBrush enables ink! projects to be multi-file, implement traits / interfaces, and more (see website for more).
+
+OpenBrush is relatively unobtrusive, and requires few changes to the ink! project to start using it. OpenBrush mostly just adds or changes macros. Also, if desired, ink! + OpenBrush projects can be split across several files. To convert back to pure ink!, (as of v3.3.0) the code would have to reside in one file. OpenBrush is a very viable and easy-setup option to make ink! development easier.
+
 ## Misc Notes (needs to be organized)
 
 - - cargo +nightly contract build
@@ -644,8 +735,10 @@ Hash::from([0x01; 32])
 - tests should be run with `cargo +nightly test` otherwise the tests do no give clear errors and debugging prints do not work
 - alice is by default the contract address
 - add a part on how Solidity has defaults, and care should be taken in rust to ensure the proper default
+- substrate-contracts-node --dev -lerror,runtime::contracts=debug
+- "failed to load bitcode of module "erc20.erc20" when cross-contract calling is due to not having `features = ["ink-as-dependency"]` on the import in the .toml
 
-### misc steps
+## misc steps
 
 - place Solidity class variables to proper places in to the contract mod
   - e.g. in struct, in constants
