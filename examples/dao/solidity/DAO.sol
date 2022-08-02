@@ -90,6 +90,7 @@ contract DAOInterface {
         bytes32 proposalHash;
         // Deposit in wei the creator added when submitting their proposal. It
         // is taken from the msg.value of a newProposal call.
+        //NOTE: uses a uint256, way too big.
         uint proposalDeposit;
         // True if this proposal is to assign a new Curator
         bool newCurator;
@@ -271,6 +272,9 @@ contract DAO is DAOInterface{
     function() payable {
     }
 
+    //NOTE: a uint256 is being returned for proposalID.
+    //This means that there can exist 2^256 - 1 proposals --
+    //something that is highly unlikely. Use a smaller type in ink!
     function newProposal(
         address _recipient,
         uint _amount,
@@ -353,6 +357,9 @@ contract DAO is DAOInterface{
         Proposal p = proposals[_proposalID];
 
         if (now >= p.votingDeadline) {
+            //NOTE: Solidity generically throws an error -- not details.
+            //This is deprecated in Solidity. A custom error could be created
+            //for this in ink!
             throw;
         }
 
@@ -375,6 +382,8 @@ contract DAO is DAOInterface{
                 unVote(i);
         }
 
+        //NOTE: Solidity allows manipulating vector length. 
+        //Rust does not allow this.
         votingRegister[msg.sender].length = 0;
         blocked[msg.sender] = 0;
     }

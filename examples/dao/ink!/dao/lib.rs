@@ -124,7 +124,7 @@ mod dao {
         // The address where the `amount` will go to if the proposal is accepted
         recipient: AccountId,
         // The amount to transfer to `recipient` if the proposal is accepted.
-        amount: u128, // u256;
+        amount: Balance,
         // A plain text description of the proposal
         description: Vec<u8>,
         // A unix timestamp, denoting the end of the voting period
@@ -138,7 +138,7 @@ mod dao {
         proposal_hash: Hash,
         // Deposit in wei the creator added when submitting their proposal. It
         // is taken from the msg.value of a newProposal call.
-        proposal_deposit: u128, //u256
+        proposal_deposit: Balance,
         // True if this proposal is to assign a new Curator
         new_curator: bool,
         // true if more tokens are in favour of the proposal than opposed to it at
@@ -198,17 +198,13 @@ mod dao {
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub enum Error {
-        /// Returned if not enough balance to fulfill a request is available.
-        InsufficientBalance,
-        /// Returned if not enough allowance to fulfill a request is available.
-        InsufficientAllowance,
-        InsufficientPrivileges,
         ProposalExecutionFailed,
         ProposalCreationFailed,
         OutsideDeadline,
         TransactionFailed,
         CallerIsCurator,
         UnableToHalveQuorum,
+        UnableToChangeDeposit,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -216,27 +212,13 @@ mod dao {
     impl Dao {
         /// Constructor that initializes the `bool` value to the given `init_value`.
         #[ink(constructor)]
-        //TODO: u128 needs to be u256
-        pub fn new(curator: AccountId, proposal_deposit: u128, token_contract_id: AccountId) -> Self {
+        pub fn new(curator: AccountId, proposal_deposit: Balance, token_contract_id: AccountId) -> Self {
             ink_lang::utils::initialize_contract(|contract| {
                 Self::new_init(contract, curator, proposal_deposit, token_contract_id)
             })
         }
 
-        fn new_init(&mut self, curator: AccountId, proposal_deposit: u128, token_contract_id: AccountId) {
-            // let total_balance = Self::env().balance();
-            // let salt = 1u32.to_le_bytes();
-            // let token = Erc20Ref::new(token_init_val)
-            //     .endowment(total_balance / 4)
-            //     .code_hash(token_contract_hash)
-            //     .salt_bytes(salt)
-            //     .instantiate()
-            //     .unwrap_or_else(|error| {
-            //         panic!(
-            //             "failed at instantiating the Erc20 contract: {:?}",
-            //             error
-            //         )
-            //     });
+        fn new_init(&mut self, curator: AccountId, proposal_deposit: Balance, token_contract_id: AccountId) {
 
             self.token = ink_env::call::FromAccountId::from_account_id(token_contract_id);
 
@@ -252,9 +234,10 @@ mod dao {
             self.allowed_recipients.insert(&self.curator, &true);
         }
 
-        //TODO: .sol contract returns a uint (uint256) -- this seems excessive
+        //NOTE: This returns a u64 (instead of the uint256 in Solidity).
+        //u64 is more than large enough to represent more proposals that could likely exist.
         #[ink(message, payable)]
-        pub fn new_proposal(&mut self, recipient: AccountId, amount: u128, description: Vec<u8>, transaction_data: Vec<u8>, debating_period: u64) -> Result<u64> {
+        pub fn new_proposal(&mut self, recipient: AccountId, amount: Balance, description: Vec<u8>, transaction_data: Vec<u8>, debating_period: u64) -> Result<u64> {
             let caller = self.env().caller();
             let deposit = self.env().transferred_value();
 
@@ -299,6 +282,7 @@ mod dao {
             
             self.proposals.push(p);
 
+            //NOTE: because cross-contract calls are being used, emitting events does not work
             // self.env().emit_event(ProposalAdded {
             //     proposal_id,
             //     recipient,
@@ -309,6 +293,9 @@ mod dao {
             Ok(proposal_id)
         }
 
+        //NOTE: not all Solidity bool returns should be a Result<()>. 
+        //Ensure that Result is only used for Solidity functions returning a boolean as a 
+        //success or no success
         #[ink(message)]
         pub fn check_proposal_code(&mut self, proposal_id: u64, recipient: AccountId, amount: u128, transaction_data: Vec<u8>) -> bool {
             let p = &self.proposals[proposal_id as usize];
@@ -318,15 +305,7 @@ mod dao {
             return p.proposal_hash == Hash::from(output);
         }
 
-        #[ink(message)]
-        pub fn get_proposal(&self, prop_id: u64) -> Proposal {
-            self.proposals[prop_id as usize].clone()
-        }
 
-        #[ink(message)]
-        pub fn get_total_supply(&self) -> Balance {
-            self.token.total_supply()
-        }
 
         #[ink(message)]
         pub fn vote(&mut self, proposal_id: u64, supports_proposal: bool) {
@@ -354,7 +333,8 @@ mod dao {
 
             let voted_proposals = &mut self.voting_register.get(caller).unwrap_or(Vec::new());
             voted_proposals.push(proposal_id);
-
+            self.voting_register.insert(caller, voted_proposals);
+            
             // self.env().emit_event(Voted {
             //     proposal_id,
             //     position: supports_proposal,
@@ -363,15 +343,18 @@ mod dao {
         }
 
         #[ink(message)]
-        pub fn un_vote(&mut self, proposal_id: u64){
+        pub fn un_vote(&mut self, proposal_id: u64) -> Result<()>{
             let caller = self.env().caller();
             let now = self.env().block_timestamp();
+
+            
 
             let mut p = &mut self.proposals[proposal_id as usize];
 
             if now >= p.voting_deadline {
-                //TOOO: solidity version `throw`s return Err(Error::OutsideDeadline)
-                return;
+                //NOTE: this is more specific than the .sol version.
+                //The .sol version uses `throw`
+                return Err(Error::OutsideDeadline);
             }
 
             if *p.voted_yes.get(&caller).unwrap_or(&false) {
@@ -383,21 +366,29 @@ mod dao {
                 p.nay -= self.token.balance_of(caller);
                 p.voted_no.insert(caller, false);
             }
+            Ok(())
         }
 
         #[ink(message)]
         pub fn un_vote_all(&mut self) {
             let caller = self.env().caller();
             let now = self.env().block_timestamp();
-            let voting_register = self.voting_register.get(caller).unwrap_or(Vec::new());
+            let voting_register = &mut self.voting_register.get(caller).unwrap_or(Vec::new());
+
+
+            // DANGEROUS loop with dynamic length - needs improvement.
             for i in 0..(voting_register.len()){
-                let p = &self.proposals[voting_register[i] as usize];
+                let prop_id = voting_register[i];
+                let p = &self.proposals[prop_id as usize];
                 if now < p.voting_deadline {
-                    self.un_vote(i as u64);
+                    self.un_vote(prop_id).expect("unable to unvote");
                 }
+                
             }
 
-            self.voting_register.insert(caller, &Vec::<u64>::new());
+            //clear the voting register, and update the mapping entry
+            voting_register.clear();
+            self.voting_register.insert(caller, voting_register);
             self.blocked.insert(caller, &0);
         }
 
@@ -534,16 +525,16 @@ mod dao {
         }
 
         #[ink(message)]
-        pub fn change_proposal_deposit(&mut self, proposal_deposit: u128) {
+        pub fn change_proposal_deposit(&mut self, proposal_deposit: Balance) -> Result<()> {
             let caller = self.env().caller();
             let contract_addr = self.env().account_id();
 
-            if caller == contract_addr || proposal_deposit > (self.actual_balance() / MAX_DEPOSIT_DIVISOR){
-                //TODO: solidity uses `throw`
-                return;
+            if caller != contract_addr || proposal_deposit > (self.actual_balance() / MAX_DEPOSIT_DIVISOR){
+                return Err(Error::UnableToChangeDeposit);
             }
 
             self.proposal_deposit = proposal_deposit;
+            Ok(())
         }
 
         #[ink(message)]
@@ -599,7 +590,6 @@ mod dao {
             return self.env().balance() - self.sum_of_proposal_deposits;
         }
 
-        //solidity has uint (256) for value
         fn min_quorum(&self, value: u128) -> u128 {
             let total_supply = self.token.total_supply();
             return total_supply / self.min_quorum_divisor +
@@ -649,6 +639,20 @@ mod dao {
             self.get_or_modify_blocked(self.env().caller())
         }
 
+        //NOTE: this function is for debugging on-chain. Not a part of 
+        //the original contract.
+        #[ink(message)]
+        pub fn get_proposal(&self, prop_id: u64) -> Proposal {
+            self.proposals[prop_id as usize].clone()
+        }
+
+        //NOTE: this function is for confirming the ERC20 cross-contract call
+        //is working. It is not a part of the original contract
+        #[ink(message)]
+        pub fn get_total_supply(&self) -> Balance {
+            self.token.total_supply()
+        }
+
     }
 
     #[cfg(test)]
@@ -665,7 +669,7 @@ mod dao {
                 ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
 
             // Constructor works.
-            let dao = Dao::new(accounts.alice, 7, Hash::from([0x01; 32]));
+            let dao = Dao::new(accounts.alice, 7, AccountId::from([0x01; 32]));
             //the proposals should start at length 1
             assert_eq!(dao.proposals.len(), 1);
             assert_eq!(dao.curator, accounts.alice);
@@ -684,7 +688,7 @@ mod dao {
             ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
 
             // Constructor works.
-            let mut dao = Dao::new(accounts.alice, 1, Hash::from([0x01; 32]));
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
             // // set bob as the contract caller
             ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
 
@@ -703,7 +707,7 @@ mod dao {
         fn check_proposal_code_works(){ 
             let accounts =
             ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
-            let mut dao = Dao::new(accounts.alice, 1, Hash::from([0x01; 32]));
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
             ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
             ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(2);
             let recipient = AccountId::from([0x01; 32]);
@@ -718,7 +722,7 @@ mod dao {
         fn check_vote_works(){ 
             let accounts =
             ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
-            let mut dao = Dao::new(accounts.alice, 1, Hash::from([0x01; 32]));
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
             ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
             ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(2);
             let recipient = AccountId::from([0x01; 32]);
@@ -742,7 +746,7 @@ mod dao {
         fn check_un_vote_works(){ 
             let accounts =
             ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
-            let mut dao = Dao::new(accounts.alice, 1, Hash::from([0x01; 32]));
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
             ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
             ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(2);
             let recipient = AccountId::from([0x01; 32]);
@@ -766,11 +770,42 @@ mod dao {
         }
 
         #[ink::test]
+        fn check_un_vote_all_works(){ 
+            let accounts =
+            ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
+            ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
+            ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(2);
+            let recipient = AccountId::from([0x01; 32]);
+            let amount = 5;
+            let transaction_data = vec![0x02; 5];
+            dao.new_proposal(recipient.clone(), amount, Vec::<u8>::from("prop 1"), transaction_data.clone(), 2 * WEEK).unwrap();
+            ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.charlie);
+            dao.new_proposal(recipient, amount + 2, Vec::<u8>::from("prop 2"), transaction_data.clone(), 2 * WEEK).unwrap();
+
+            ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
+
+            dao.vote(1, true);
+            dao.vote(2, true);
+
+            dao.un_vote_all();
+
+            let p1 = &dao.proposals[1];
+            let p2 = &dao.proposals[2];
+            assert_eq!(p1.yea, 0);
+            assert_eq!(p1.nay, 0);
+            assert_eq!(p2.yea, 0);
+            assert_eq!(p2.nay, 0);
+            assert_eq!(*p1.voted_yes.get(&accounts.bob).unwrap(), false);
+            assert_eq!(*p2.voted_yes.get(&accounts.bob).unwrap(), false);
+        }
+
+        #[ink::test]
         #[should_panic]
         fn execute_proposal_works(){ 
             let accounts =
             ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
-            let mut dao = Dao::new(accounts.alice, 1, Hash::from([0x01; 32]));
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
             ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
             ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(5);
             let recipient = AccountId::from([0x01; 32]);
@@ -791,14 +826,14 @@ mod dao {
             }
 
             //will panic because "contract invocation" is not supported in an off-chain enviroment
-            let res = dao.execute_proposal(1, [1,2,3,4], transaction_data, 1000);
+            let res = dao.execute_proposal(1, vec![1,2,3,4], transaction_data, 1000);
         }
 
         #[ink::test]
         fn close_proposal_works(){
             let accounts =
             ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
-            let mut dao = Dao::new(accounts.alice, 1, Hash::from([0x01; 32]));
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
             ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
             ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(5);
             let recipient = AccountId::from([0x01; 32]);
@@ -818,7 +853,7 @@ mod dao {
         fn unblock_me_works(){
             let accounts =
             ink_env::test::default_accounts::<ink_env::DefaultEnvironment>();
-            let mut dao = Dao::new(accounts.alice, 1, Hash::from([0x01; 32]));
+            let mut dao = Dao::new(accounts.alice, 1, AccountId::from([0x01; 32]));
             ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.bob);
             ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(5);
             let recipient = AccountId::from([0x01; 32]);

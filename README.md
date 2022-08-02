@@ -6,7 +6,8 @@
   - [Converting Solidity Contract to ink!](#converting-solidity-contract-to-ink)
     - [1. Generate New ink! Contract](#1-generate-new-ink-contract)
     - [2. Build ink! Contract](#2-build-ink-contract)
-    - [3. Convert Solidity class to Rust struct](#3-convert-solidity-class-to-rust-struct)
+    - [3. Convert Solidity class fields to Rust struct](#3-convert-solidity-class-fields-to-rust-struct)
+    - [4. Convert each function](#4-convert-each-function)
   - [Best Practices + Tips](#best-practices--tips)
   - [Syntax Equivalencies](#syntax-equivalencies)
     - [`public function`](#public-function)
@@ -18,12 +19,16 @@
     - [`contract caller`](#contract-caller)
     - [`contract's address`](#contracts-address)
     - [`bytes`](#bytes)
-    - [`uint256` TODO](#uint256-todo)
+    - [`uint256`](#uint256)
     - [`payable`](#payable)
     - [`received deposit / payment`](#received-deposit--payment)
     - [`contract balance`](#contract-balance)
     - [`transfer tokens from contract`](#transfer-tokens-from-contract)
     - [`events & indexed`](#events--indexed)
+    - [`errors and returning`](#errors-and-returning)
+      - [`throw`](#throw)
+      - [`assert`](#assert)
+      - [`require and revert`](#require-and-revert)
     - [`nested mappings + custom / advanced structures`](#nested-mappings--custom--advanced-structures)
     - [`cross-contract calling`](#cross-contract-calling)
     - [`submit generic transaction / dynamic cross-contract calling`](#submit-generic-transaction--dynamic-cross-contract-calling)
@@ -31,12 +36,10 @@
   - [Troubleshooting Errors](#troubleshooting-errors)
   - [unit testing (off-chain)](#unit-testing-off-chain)
   - [OpenBrush](#openbrush)
-  - [Misc Notes (needs to be organized)](#misc-notes-needs-to-be-organized)
-  - [misc steps](#misc-steps)
 
 ## What is ink!
 
-ink! is the smart contract language used in Substrate. It is built from Rust -- meaning that the great features of Rust are included in ink!. These features are ideal for a smart contract language. Furthermore, ink! is compiled to WebAssembly, allowing for high-performant, consistent, and very well-researched contracts. ink! smart contracts use Rust's no_std. So, some common Rust implementations are not directly supported. However, ink! does have crates that reimplement common Rust code to work in the Substrate runtime.
+ink! is the smart contract language used in Substrate. It is built from Rust -- meaning that the great features of Rust are included in ink!. These features are ideal for a smart contract language. Furthermore, ink! is compiled to WebAssembly, which is high-performant, consistent, and very well researched. Furthermore, using Rust allows for inherent [safe math](https://ink.substrate.io/faq#overflow-safety). ink! smart contracts use Rust's no_std. So, some common Rust implementations are not directly supported. However, ink! does have crates that reimplement common Rust code to work in the Substrate runtime.
 
 ## Setup
 
@@ -58,7 +61,7 @@ cargo contract new <contract-name>
 cargo +nightly contract build
 ```
 
-### 3. Convert Solidity class to Rust struct
+### 3. Convert Solidity class fields to Rust struct
 
 Solidity is an object oriented language, and uses classes. ink! (Rust) does not use classes.
 
@@ -102,7 +105,7 @@ use ink_lang as ink;
 mod mycontract {
     #[ink(storage)]
     pub struct MyContract {
-        the_bool: bool,
+        the_bool: bool, //class members become struct fields
     }
 
     #[ink(event)]
@@ -118,7 +121,7 @@ mod mycontract {
             Self { the_bool: some_bool }
         }
 
-        #[ink(message)]
+        #[ink(message)] //functions become struct implementations
         pub fn set_bool(&mut self, new_bool: bool) -> bool{
             let bool_changed = true;
 
@@ -149,10 +152,63 @@ A few key differences are:
 - Solidity uses camelCase. ink! uses snake_case.
 - In Solidity, the variable type comes before the variable name (e.g. bool myVar). While ink! specifies var type after the var name (e.g. my_var: bool)
 
+### 4. Convert each function
+
+- Start converting each function one by one.
+  - A recommended approach is to, if possible, skip cross-contract calls (at first) and use mock data instead
+  - This way offchain unit tests can be written to test the core functionality
+    - unit tests are offchain and do not work with cross-contract calls
+  - Once fully tested, start adding in cross-contract calls and perform on-chain manual testing
+- Ensure that function's visibility (public, private) are matched in ink!
+- In Solidity, if a function returns a `bool _success`, ink! will use a `Result<()>` instead (`Result::Ok` or `Result::Err`).
+
+  ```rust
+  // ink!
+
+  //result type
+  pub type Result<T> = core::result::Result<T, Error>;
+
+  // ...
+
+  //public function that returns a Result
+  #[ink(message)]
+  pub fn my_function(&self) -> Result<()>{
+      Ok(())
+  }
+  ```
+
 ## Best Practices + Tips
 
 - If the Solidity contract uses a `string`, it is recommended to use a `Vec<u8>` to avoid the overhead of a `String`. See [here](https://substrate.stackexchange.com/questions/1174/why-is-it-a-bad-idea-to-use-string-in-an-ink-smart-contract) for more details on why. The smart contract should only contain the information that strictly needs to be placed on the blockchain and go through consensus. The UI should be used for displaying strings.
 - Double check all `.unwrap()` performed. Solidity does not have as strict checking as ink! does. For example, a mapping field can be accessed as simple as `myMapping[someKey]`. ink!, however, requires `self.my_mapping.get(some_key).unwrap()`. `.unwrap_or(some_val)` is very useful to handle `None` cases.
+- Run the contracts node with `substrate-contracts-node --dev -lerror,runtime::contracts=debug` for debug prints, and errors to be displayed.
+- When passing parameters to a helper, it is recommended to pass references (even for primitives) as Wasm is more efficient with references.
+  For example (see [erc20](https://github.com/paritytech/ink/blob/master/examples/erc20/lib.rs) example):
+
+```rust
+/// Returns the account balance for the specified `owner`.
+///
+/// Returns `0` if the account is non-existent.
+#[ink(message)]
+pub fn balance_of(&self, owner: AccountId) -> Balance {
+    self.balance_of_impl(&owner)
+}
+
+/// Returns the account balance for the specified `owner`.
+///
+/// Returns `0` if the account is non-existent.
+///
+/// # Note
+///
+/// Prefer to call this method over `balance_of` since this
+/// works using references which are more efficient in Wasm.
+#[inline]
+fn balance_of_impl(&self, owner: &AccountId) -> Balance {
+    self.balances.get(owner).unwrap_or_default()
+}
+```
+
+- Just as in Solidity, ink! does not have floating point numbers due to the non-deterministic nature. Instead, the frontend should add decimal points as needed.
 
 ## Syntax Equivalencies
 
@@ -289,7 +345,13 @@ self.env().account_id()
 
 Solidity has a type `bytes`. `bytes` is (essentially) equivalent to an array of uint8. So, `bytes` in Solidity => `Vec<u8>` in ink!. See [here](https://ethereum.stackexchange.com/questions/91119/difference-between-byte-and-uint8-datatypes-in-solidity) for more details. If desired, a `bytes` struct can be created in ink! to replicate the `bytes` type in Solidity.
 
-### `uint256` TODO
+### `uint256`
+
+Solidity uses `uint256` and `uint` to represent a 256-bit type.
+
+Solidity is 256-bit / 32-byte word optimized. Meaning, using `uint256` in Solidity contracts will reduce gas usage -- but increase storage usage. The largest size ink! has built in is a `u128`. ink! compiles to Wasm. The largest primitive Wasm has is 64bit (due to most computers using 64bit). So, there is no benefit to using any larger primitive over a collection.
+
+When porting a `uint256` from Solidity to ink!, it is recommended to, with discretion, determine the range of the value, and choose the appropiate size (u8, u16, u32, u64, u128). If a 256-bit hash value is required, ink! has a `Hash` primitive available. In the event a value needs to be 256-bit, it is recommended to use an array (e.g. `[u64; 4]`).
 
 ### `payable`
 
@@ -371,6 +433,66 @@ self.env().emit_event(MyCoolEvent {
     indexed_value: some_value,
     not_indexed_value: some_other_value
 });
+```
+
+### `errors and returning`
+
+Solidity has several error handling mechanisms: `assert`, `require`, `revert`, and `throw`. Each of these will revert the changed state when called. See [this article](https://medium.com/blockchannel/the-use-of-revert-assert-and-require-in-solidity-and-the-new-revert-opcode-in-the-evm-1a3a7990e06e) for details on these.
+
+ink! uses a `Result` enum (`Ok(T)`, `Err(E)`), `assert!` and `panic!`. [This Stack Exchange](https://substrate.stackexchange.com/questions/2391/panic-in-ink-smart-contracts) answer and [GitHub discussion](https://github.com/paritytech/ink/issues/641) provide more details on these.
+
+#### `throw`
+
+Throw is deprecated in Solidity and would throw an invalid opcode error (no details) and revert the state. As an alternative to the `if...{throw;}` pattern in Solidity, a `Result::Err` should be returned for expected errors, and an `assert!` should be used for errors that should not occur.
+
+#### `assert`
+
+In Solidity, `assert` is used as internal guards against errors in the _code_. In general, properly functioning code should never hit a failing assert. `assert` in Solidity does not have error strings. In ink!, use `assert!`. `assert!` will `panic!` if it evaluates to _false_. The state will be reverted, and a `CalleeTrapped` will be returned. The (optional) error string will be printed to the debug buffer.
+
+```rust
+// ink!
+assert!(caller == owner, "caller is not owner")
+```
+
+#### `require and revert`
+
+In Solidity, `require` is used for general (normal) errors -- such as errors that occur based on user input. `require` does have the option for an error string. `revert` is very similar to `require` except that `revert` will be called in `if ... else` chains. Both `require` and `revert` will revert the chain state. In ink!, `if ... { return Err(Error::SomeError) }` should be used for `require` or `revert`. When an `Result::Err` is returned in ink!, then all state is reverted. In general, returning `Result::Err` should be the most used way to return errors.
+
+```c++
+// Solidity
+function myFunction(bool returnError) public {
+    require(!returnError, "my error here");
+
+    //or
+
+    if returnError {
+        revert("my error here");
+    }
+}
+```
+
+```rust
+//ink!
+
+#[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
+#[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+pub enum Error {
+    /// Provide a detailed comment on the error
+    MyError,
+}
+
+// result type
+pub type Result<T> = core::result::Result<T, Error>;
+
+// ...
+#[ink(message)]
+pub fn my_function(&self, return_error: bool) -> Result<()> {
+    if return_error{
+        return Err(Error::MyError)
+    }
+    Ok(())
+}
+
 ```
 
 ### `nested mappings + custom / advanced structures`
@@ -607,9 +729,9 @@ fn invoke_transaction(
     &mut self,
     callee: AccountId,
     transfer_amount: u128,
-    function_selector: &[u8; 4],
-    transaction_data: &Vec<u8>,
-    gas_limit: &u64) -> Result<()> {
+    function_selector: [u8; 4],
+    transaction_data: Vec<u8>,
+    gas_limit: u64) -> Result<()> {
 
     let result = build_call::<<Self as ::ink_lang::reflect::ContractEnv>::Env>()
         .call_type(
@@ -637,7 +759,8 @@ Note: the `function_selector` bytes can be found in the generated `target/ink/me
   - implementing traits / interfaces will not work
   - There are alternatives that do add this functionality such as OpenBrush
 - Nested structs and data structures can be difficult to use
-- Cross-contract calling prevents events from being emitted. See [here](https://github.com/paritytech/ink/issues/1000) for details
+- Cross-contract calling prevents events from being emitted. See [here](https://github.com/paritytech/ink/issues/1000) for details.
+- Cross-contract calling can not be tested offchain with unit tests. [Redspot](https://github.com/patractlabs/redspot) provides integration tests using TS for deployed contracts
 
 ## Troubleshooting Errors
 
@@ -656,18 +779,35 @@ aware of a better workaround until the bug in the compiler is fixed.
 ```
 
 **Solution**  
-Add the following to contract the Cargo.toml:
+Add the following to the contract Cargo.toml:
 
 ```
 [profile.release]
 overflow-checks = false
 ```
 
+- `"failed to load bitcode of module '...' "`
+
+This happens when trying to import a contract for cross-contract calling.
+
+**Solution**  
+Ensure that the following is added to Cargo.toml contract import:`
+
+```
+features = ["ink-as-dependency"]
+```
+
+so the import would look like:
+
+```
+mycontract = { path = "mycontract/", default-features = false, features = ["ink-as-dependency"]}
+```
+
 ## unit testing (off-chain)
 
-- Unit tests are an excellent way to ensure your code works before attempting on-chain testing.
-- To run ink! tests, do _not_ use `cargo +nightly contract test`. Use `cargo +nightly test`. See [here](https://substrate.stackexchange.com/questions/3197/how-to-understand-which-test-failed-in-ink) for more info why.
-- From the contract module, make sure to `use` the contract struct and anything else that is going to be used in the unit tests. For example:
+- Unit tests are an integral part of smart-contract development and ensuring your code works off-chain before testing on-chain.
+- To run ink! tests, do _not_ use `cargo +nightly contract test`. Use `cargo +nightly test`. Add the `--nocapture` flag for debug prints to show. See [here](https://substrate.stackexchange.com/questions/3197/how-to-understand-which-test-failed-in-ink) for more info why.
+- From the contract module, make sure to make the the contract struct and anything else that is going to be used in the unit tests public. For example:
 
 ```rust
 // top of file
@@ -703,7 +843,7 @@ ink_env::test::set_callee::<ink_env::DefaultEnvironment>(callee);
 ink_env::test::set_value_transferred::<ink_env::DefaultEnvironment>(2);
 
 // increase block number (and block timestamp).
-// this can be placed in a loop to advance the block # many times
+// this can be placed in a loop to advance the block many times
 ink_env::test::advance_block::<ink_env::DefaultEnvironment>();
 
 //generate arbitrary AccountId
@@ -711,38 +851,13 @@ AccountId::from([0x01; 32]);
 
 //generate arbitrary Hash
 Hash::from([0x01; 32])
+
+//macro for tests that are expected to panic.
+#[should_panic]
 ```
 
 ## OpenBrush
 
 [OpenBrush](https://openbrush.io/) is a library that adds additional features to ink!. OpenBrush enables ink! projects to be multi-file, implement traits / interfaces, and more (see website for more).
 
-OpenBrush is relatively unobtrusive, and requires few changes to the ink! project to start using it. OpenBrush mostly just adds or changes macros. Also, if desired, ink! + OpenBrush projects can be split across several files. To convert back to pure ink!, (as of v3.3.0) the code would have to reside in one file. OpenBrush is a very viable and easy-setup option to make ink! development easier.
-
-## Misc Notes (needs to be organized)
-
-- - cargo +nightly contract build
-- - solidity does \_parameters
-- ink! does not have modifiers like solidity, so the modifiers should be written as functions in ink! and checked at the beginning of the function
-- Mapping seems like it can only be used in the #[ink(storage)] struct.
-  - nested mappings are not allowed
-  - https://substrate.stackexchange.com/questions/1659/how-to-have-a-mapping-in-a-custom-structure-inside-an-ink-contract
-  - BTreeMap is a workaround to using a map still -- although less efficient
-- Using custom structures may require some additional trait implementations
-  - if you have a storage struct with a Vec<SomeStruct>, an error may be thrown saying that `PackedAllocate` is not implemented for `SomeStruct`. To fix this, implement `PackedAllocate` for that struct
-  - https://paritytech.github.io/ink/ink_storage/traits/trait.PackedAllocate.html#impl-PackedAllocate-for-StdLinkedList%3CT%3E
-- `p.recipient.call.value(p.amount)(_transactionData)` calls the contract with address `recipient` and sets the value to send with the call, and `transactionData` is the payload passed into the contract
-- tests should be run with `cargo +nightly test` otherwise the tests do no give clear errors and debugging prints do not work
-- alice is by default the contract address
-- add a part on how Solidity has defaults, and care should be taken in rust to ensure the proper default
-- substrate-contracts-node --dev -lerror,runtime::contracts=debug
-- "failed to load bitcode of module "erc20.erc20" when cross-contract calling is due to not having `features = ["ink-as-dependency"]` on the import in the .toml
-
-## misc steps
-
-- place Solidity class variables to proper places in to the contract mod
-  - e.g. in struct, in constants
-- convert datatypes to rust compatible, and swap from datatype first to datatype after (e.g., uint128 var -> var: u128)
-
-https://paritytech.github.io/ink/ink_prelude/collections/btree_map/struct.BTreeMap.html
-https://paritytech.github.io/ink/src/ink_storage/traits/packed.rs.html#22-29
+OpenBrush is relatively unobtrusive, and requires few changes to the ink! project to start using it. OpenBrush mostly just adds or changes macros. Also, if desired, ink! + OpenBrush projects can be split across several files. To convert back to pure ink!, (as of ink! v3.3.0) the code would have to reside in one file. OpenBrush is a very viable and easy-setup option to make ink! development easier.
