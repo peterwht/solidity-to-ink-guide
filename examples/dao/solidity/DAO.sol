@@ -248,6 +248,7 @@ contract DAOInterface {
 contract DAO is DAOInterface{
 
     // Modifier that allows only shareholders to vote and create new proposals
+    //NOTE: this should be implemented as function in ink!
     modifier onlyTokenholders {
         if (token.balanceOf(msg.sender) == 0) throw;
             _;
@@ -274,7 +275,9 @@ contract DAO is DAOInterface{
 
     //NOTE: a uint256 is being returned for proposalID.
     //This means that there can exist 2^256 - 1 proposals --
-    //something that is highly unlikely. Use a smaller type in ink!
+    //something that is highly unlikely. Use a smaller type in ink!.
+    //Also note the `onlyTokenholders` modifier. This will have 
+    //to be implemented as a function in ink!
     function newProposal(
         address _recipient,
         uint _amount,

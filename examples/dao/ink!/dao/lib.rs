@@ -1,3 +1,9 @@
+//! https://github.com/blockchainsllc/DAO/blob/develop/DAO.sol
+//! An example contract showing how to port a Solidity
+//! contract to an ink! contract.
+//!
+//! * This is just an example and not safe for production use *
+
 #![cfg_attr(not(feature = "std"), no_std)]
 // #![feature(min_specialization)]
 
@@ -165,9 +171,9 @@ mod dao {
     #[ink(event)]
     pub struct ProposalAdded {
         #[ink(topic)]
-        proposal_id: u64, //uint / u256
+        proposal_id: u64,
         recipient: AccountId,
-        amount: u128, // uint
+        amount: Balance, 
         description: Vec<u8>
     }
 
@@ -235,10 +241,12 @@ mod dao {
         }
 
         //NOTE: This returns a u64 (instead of the uint256 in Solidity).
-        //u64 is more than large enough to represent more proposals that could likely exist.
+        //u64 is more than large enough to represent the proposals that could likely exist.
         #[ink(message, payable)]
         pub fn new_proposal(&mut self, recipient: AccountId, amount: Balance, description: Vec<u8>, transaction_data: Vec<u8>, debating_period: u64) -> Result<u64> {
             let caller = self.env().caller();
+            self.ensure_tokenholder(&caller);
+
             let deposit = self.env().transferred_value();
 
             if !self.allowed_recipients.get(recipient).unwrap_or(false)
@@ -256,9 +264,10 @@ mod dao {
 
             let proposal_id: u64 = self.proposals.len() as u64;
 
-            let encodable = (recipient, amount, transaction_data); // Implements `scale::Encode`
-            let mut output = <Keccak256 as HashOutput>::Type::default(); // 256-bit buffer
-            ink_env::hash_encoded::<Keccak256, _>(&encodable, &mut output);
+            // let encodable = (recipient, amount, transaction_data); // Implements `scale::Encode`
+            // let mut output = <Keccak256 as HashOutput>::Type::default(); // 256-bit buffer
+            // ink_env::hash_encoded::<Keccak256, _>(&encodable, &mut output);
+            let proposal_hash = hash_proposal(&recipient, &amount, &transaction_data);
 
             let p: Proposal = Proposal{
                 recipient: recipient,
@@ -267,7 +276,7 @@ mod dao {
                 voting_deadline: self.env().block_timestamp() + debating_period,
                 open: true,
                 proposal_passed: false,
-                proposal_hash: Hash::from(output),
+                proposal_hash: proposal_hash,
                 proposal_deposit: deposit,
                 new_curator: false,
                 pre_support: false,
@@ -313,13 +322,15 @@ mod dao {
 
             self.un_vote(proposal_id);
 
+            let caller_balance = self.get_token_balance(&caller);
+
             let mut p = &mut self.proposals[proposal_id as usize];
 
             if supports_proposal {
-                p.yea += self.token.balance_of(caller);
+                p.yea += caller_balance;
                 p.voted_yes.insert(caller, true);
             }else {
-                p.nay += self.token.balance_of(caller);
+                p.nay += caller_balance;
                 p.voted_no.insert(caller, true);
             }
 
@@ -347,7 +358,7 @@ mod dao {
             let caller = self.env().caller();
             let now = self.env().block_timestamp();
 
-            
+            let caller_balance = self.get_token_balance(&caller);            
 
             let mut p = &mut self.proposals[proposal_id as usize];
 
@@ -358,12 +369,12 @@ mod dao {
             }
 
             if *p.voted_yes.get(&caller).unwrap_or(&false) {
-                p.yea -= self.token.balance_of(caller);
+                p.yea -= caller_balance;
                 p.voted_yes.insert(caller, false);
             }
             
             if *p.voted_no.get(&caller).unwrap_or(&false) {
-                p.nay -= self.token.balance_of(caller);
+                p.nay -= caller_balance;
                 p.voted_no.insert(caller, false);
             }
             Ok(())
@@ -374,7 +385,6 @@ mod dao {
             let caller = self.env().caller();
             let now = self.env().block_timestamp();
             let voting_register = &mut self.voting_register.get(caller).unwrap_or(Vec::new());
-
 
             // DANGEROUS loop with dynamic length - needs improvement.
             for i in 0..(voting_register.len()){
@@ -639,6 +649,24 @@ mod dao {
             self.get_or_modify_blocked(self.env().caller())
         }
 
+        //only compiles when *not* running tests
+        #[cfg(not(test))]
+        fn get_token_balance(&self, caller: &AccountId) -> Balance {
+            self.token.balance_of(*caller)
+        }
+
+        //only compiles when running tests
+        #[cfg(test)]
+        fn get_token_balance(&self, _: &AccountId) -> Balance {
+            1
+        }
+
+        //NOTE: is a modifer in Solidity. Will panic! if 
+        //not a tokenholder
+        fn ensure_tokenholder(&self, caller: &AccountId) {
+            assert!(self.get_token_balance(caller) != 0);
+        }
+
         //NOTE: this function is for debugging on-chain. Not a part of 
         //the original contract.
         #[ink(message)]
@@ -653,6 +681,14 @@ mod dao {
             self.token.total_supply()
         }
 
+    }
+
+    //helper function for to hash the proposal
+    fn hash_proposal(recipient: &AccountId, amount: &Balance, transaction_data: &Vec<u8>) -> Hash {
+        let encodable = (recipient, amount, transaction_data); // Implements `scale::Encode`
+        let mut output = <Keccak256 as HashOutput>::Type::default(); // 256-bit buffer
+        ink_env::hash_encoded::<Keccak256, _>(&encodable, &mut output);
+        return Hash::from(output);
     }
 
     #[cfg(test)]

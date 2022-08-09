@@ -36,10 +36,11 @@
   - [Troubleshooting Errors](#troubleshooting-errors)
   - [unit testing (off-chain)](#unit-testing-off-chain)
   - [OpenBrush](#openbrush)
+  - [Command Compilation](#command-compilation)
 
 ## What is ink!
 
-ink! is the smart contract language used in Substrate. It is built from Rust -- meaning that the great features of Rust are included in ink!. These features are ideal for a smart contract language. Furthermore, ink! is compiled to WebAssembly, which is high-performant, consistent, and very well researched. Furthermore, using Rust allows for inherent [safe math](https://ink.substrate.io/faq#overflow-safety). ink! smart contracts use Rust's no_std. So, some common Rust implementations are not directly supported. However, ink! does have crates that reimplement common Rust code to work in the Substrate runtime.
+ink! is the smart contract language used in Substrate. It is built from Rust -- meaning that the great features of Rust are included in ink!. These features are ideal for a smart contract language. Furthermore, ink! is compiled to WebAssembly, which is high-performant, consistent, and very well researched. Furthermore, using Rust allows for inherent [safe math](https://ink.substrate.io/faq#overflow-safety) checks. ink! smart contracts use Rust's no_std. So, some common Rust implementations are not directly supported. However, ink! does have crates that reimplement common Rust code to work in the Substrate runtime.
 
 ## Setup
 
@@ -820,6 +821,54 @@ pub use self::mycontract::{
 };
 ```
 
+- Off-chain unit tests will not work with cross-contract calls.
+  A nice workaround to ensure unit tests are still passing is to provide mock data.
+
+An easy approach is to use conditional compiling with `#[cfg(test)]` and `#[cfg(not(test))]`.
+
+For example, with a read only-exmaple for an erc-20 cross-contract call:
+
+```rust
+//only compiles when *not* running tests
+#[cfg(not(test))]
+fn get_token_balance(&self, caller: &AccountId) -> Balance {
+    //calls the external ERC-20 contract
+    self.token.balance_of(*caller)
+}
+
+//only compiles when running tests
+#[cfg(test)]
+fn get_token_balance(&self, _: &AccountId) -> Balance {
+    //arbitrary value
+    1
+}
+```
+
+And if the cross-contract call _writes_ to storage, a mock field can be added to the contract struct. For example:
+
+```rust
+#[ink(storage)]
+pub struct MyContract {
+    #[cfg(test)]
+    mock_field: SomeStruct, // will serve as a fake storage
+}
+
+...
+
+//on-chain, performs cross-contract call
+#[cfg(not(test))]
+fn do_some_write(&mut self) {
+    self.external_contract.write_to_field(0xDEADBEEF);
+}
+
+
+//testing environment only
+#[cfg(test)]
+fn do_some_write(&mut self) {
+    self.mock_field.my_fake_storage_item = 0xDEADBEEF;
+}
+```
+
 - useful code to interact + modify contract enviroment for testing
 
 [ink_env docs](https://paritytech.github.io/ink/ink_env/test/index.html)
@@ -861,3 +910,17 @@ Hash::from([0x01; 32])
 [OpenBrush](https://openbrush.io/) is a library that adds additional features to ink!. OpenBrush enables ink! projects to be multi-file, implement traits / interfaces, and more (see website for more).
 
 OpenBrush is relatively unobtrusive, and requires few changes to the ink! project to start using it. OpenBrush mostly just adds or changes macros. Also, if desired, ink! + OpenBrush projects can be split across several files. To convert back to pure ink!, (as of ink! v3.3.0) the code would have to reside in one file. OpenBrush is a very viable and easy-setup option to make ink! development easier.
+
+## Command Compilation
+
+```
+# new ink! contract project
+cargo contract new <contract-name>
+
+# build contract
+cargo +nightly contract build
+
+# start substrate contracts node. Only prints errors and debug statements.
+substrate-contracts-node --dev -lerror,runtime::contracts=debug
+
+```
